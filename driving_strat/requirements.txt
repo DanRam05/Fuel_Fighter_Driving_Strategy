@@ -1,3 +1,9 @@
 casadi
+<<<<<<< HEAD
 matplotlib
+=======
+pandas
+matplotlib
+os
+>>>>>>> d8d6a2fcc3dc6afed5ee5171c11332923519cb44
 numpy
