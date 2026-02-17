@@ -2,79 +2,71 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-# Internal imports based on your directory structure
 from track.track_loader import load_track
 from track.curvature import compute_curvature_splines
 from optimization.ocp import solve_energy_ocp
-from utils.plotting import plot_track
+from utils.plotting import plot_track  # Ensure this is imported
 
 def main():
-    # --- 1. Setup Paths ---
-    pkg_root = Path(__file__).resolve().parent
-    data_path = pkg_root / 'data' / 'sem_2025_eu.csv'
+    # --- 1. Robust Pathing ---
+    script_dir = Path(__file__).resolve().parent
+    data_path = script_dir / 'data' / 'sem_2025_eu.csv'
 
-    # --- 2. Load Raw Track Data ---
-    # s: distance, x/y: centerline, xl/yl/xr/yr: boundaries
+    # --- 2. Load Track Data ---
     s, x, y, xl, yl, xr, yr = load_track(str(data_path), radius=6.0)
-    print(f"Track loaded: {s[-1]:.2f}m total length.")
-
-    # --- 3. Build Smooth Geometry ---
-    # These are CasADi functions needed by the OCP and for plotting
     f_x, f_y, f_psi, f_kappa = compute_curvature_splines(s, x, y)
-
-    # --- 4. Run Optimization ---
-    # We create a discretization grid (s_ocp) for the solver
     s_ocp = np.linspace(0, s[-1], 300) 
     
+    # --- 3. Run Optimization ---
+    opti, opt_vars = solve_energy_ocp(s_ocp, f_kappa, track_radius=6.0)
+    
     try:
-        # solve_energy_ocp must return (sol, vars_dict)
-        sol, vars = solve_energy_ocp(s_ocp, f_kappa, track_radius=6.0)
-        
-        # Extract numerical results from the solver
-        n_opt = sol.value(vars['n'])
-        v_opt = sol.value(vars['v'])
-        
-        # --- 5. Transform Frenet (n, s) to Cartesian (x, y) ---
-        # This converts lateral offsets into map coordinates
-        x_opt = []
-        y_opt = []
-        
-        for i in range(len(s_ocp)):
-            si = s_ocp[i]
-            ni = n_opt[i]
-            
-            # Get centerline position and heading at distance si
-            cx = float(f_x(si))
-            cy = float(f_y(si))
-            psi = float(f_psi(si))
-            
-            # Rotate n-offset by the track heading to get global coordinates
-            # Positive n is left, Negative n is right
-            x_opt.append(cx - ni * np.sin(psi))
-            y_opt.append(cy + ni * np.cos(psi))
+        sol = opti.solve()
+        n_opt = sol.value(opt_vars['n'])
+        v_opt = sol.value(opt_vars['v'])
+        title_prefix = "Optimal Trajectory"
+    except:
+        print("Using debug values due to solver timeout...")
+        n_opt = opti.debug.value(opt_vars['n'])
+        v_opt = opti.debug.value(opt_vars['v'])
+        title_prefix = "Debug Path (Non-Converged)"
 
-        # --- 6. Visualization ---
-        # Pass show=False to prevent the window from blocking execution
-        ax = plot_track(x, y, show=False, line_radius_m=6.0, color='gray', alpha=0.3)
-        
-        # Plot the boundaries for clarity
-        ax.plot(xl, yl, 'k--', alpha=0.2)
-        ax.plot(xr, yr, 'k--', alpha=0.2)
-        
-        # Plot the optimized trajectory
-        # Using a scatter plot colored by velocity (v) to see braking/acceleration zones
-        scatter = ax.scatter(x_opt, y_opt, c=v_opt, cmap='jet', s=10, label='Speed (m/s)')
-        ax.plot(x_opt, y_opt, 'r-', linewidth=1.5, alpha=0.7, label='Optimal Path')
-        
-        plt.colorbar(scatter, ax=ax, label='Velocity [m/s]')
-        ax.legend()
-        ax.set_title("Energy Efficient Trajectory")
-        
-        print("Optimization successful. Displaying plot...")
-        plt.show()
+    # --- 4. Transform to Cartesian ---
+    x_opt, y_opt = [], []
+    for si, ni in zip(s_ocp, n_opt):
+        psi = float(f_psi(si))
+        x_opt.append(float(f_x(si)) - ni * np.sin(psi))
+        y_opt.append(float(f_y(si)) + ni * np.cos(psi))
 
-    except Exception as e:
-        print(f"An error occurred during optimization: {e}")
+    # --- 5. Visualization ---
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [3, 1]})
+
+    # --- RESTORED: The Gray Track Boundaries ---
+    # Use your original plot_track utility to draw the 6m wide track
+    plot_track(x, y, ax=ax1, show=False, line_radius_m=6.0, color='gray', alpha=0.3)
+    ax1.plot(xl, yl, 'k--', alpha=0.1) # Left boundary line
+    ax1.plot(xr, yr, 'k--', alpha=0.1) # Right boundary line
+
+    # Trajectory overlay
+    v_min, v_max = np.min(v_opt), np.max(v_opt)
+    if v_max - v_min < 0.05: v_max += 0.2; v_min -= 0.2
+    
+    # Force the colorbar to show a 10 km/h range for contrast
+    v_kmh = v_opt * 3.6
+    path = ax1.scatter(x_opt, y_opt, c=v_kmh, cmap='jet', s=10, zorder=5, vmin=20, vmax=35)
+    plt.colorbar(path, ax=ax1, label='Velocity [m/s]')
+    ax1.set_title(f"{title_prefix} - 80kg Setup")
+
+    # Lateral Position Plot
+    ax2.plot(s_ocp, n_opt, 'g', linewidth=2)
+    ax2.axhline(6, color='r', linestyle='--', alpha=0.3)
+    ax2.axhline(-6, color='r', linestyle='--', alpha=0.3)
+    ax2.set_ylabel("Lateral Position n [m]")
+    ax2.set_xlabel("Track Distance [s]")
+    ax2.grid(True, alpha=0.2)
+    
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     main()

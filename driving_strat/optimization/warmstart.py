@@ -13,8 +13,9 @@ def generate_warmstart(s_grid, v_init=10.0):
     """
     N = len(s_grid) - 1
     
-    # n (lateral deviation): Start on the centerline (0)
-    n_guess = np.zeros(N + 1)
+    # n (lateral deviation): 
+    # Instead of zeros, give it a tiny bit of random room to explore
+    n_guess = np.random.uniform(-0.1, 0.1, N + 1)
     
     # alpha (heading error): Start aligned with track (0)
     alpha_guess = np.zeros(N + 1)
