@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from scipy.interpolate import CubicSpline
 
 def load_track(path, radius=6.0):
     df = pd.read_csv(path)
@@ -15,6 +16,7 @@ def load_track(path, radius=6.0):
     s = df[s_col].values.astype(float)
     x = df['UTMX'].values.astype(float)
     y = df['UTMY'].values.astype(float)
+    z = df['Elevation (m)'].values.astype(float) if 'Elevation (m)' in df.columns else np.zeros_like(s)
 
     # --- Shift so first point is at (0,0) ---
     x_shift = x[0]
@@ -50,4 +52,4 @@ def load_track(path, radius=6.0):
     xr = right[:, 0]
     yr = right[:, 1]
 
-    return s, x, y, xl, yl, xr, yr
+    return s, x, y, xl, yl, xr, yr, z
