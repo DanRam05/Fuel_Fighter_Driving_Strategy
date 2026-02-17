@@ -15,7 +15,8 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
     # --- 1. Variables ---
     n = opti.variable(N+1)      
     alpha = opti.variable(N+1)  
-    v = opti.variable(N+1)      
+    v = opti.variable(N+1)
+    accel = opti.variable(N)     # Explicit acceleration variable
     F_wheels = opti.variable(N) 
 
     # --- 2. Objective Function (High Realism) ---
@@ -50,14 +51,19 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
     F_delta = F_wheels[1:] - F_wheels[:-1]
     force_smoothness = 1e-1 * ca.sum1(F_delta**2)
     
+    # Jerk constraint: Penalize rapid changes in acceleration for smooth transitions
+    accel_delta = accel[1:] - accel[:-1]
+    jerk_smoothness = 2.0 * ca.sum1(accel_delta**2)
+    
     opti.minimize(energy_cost + speed_tracking + steering_smoothness + 
-              path_smoothness + force_smoothness - dist_reward)
+              path_smoothness + force_smoothness + jerk_smoothness - dist_reward)
 
     # --- 3. Initial Guess ---
     guess = generate_warmstart(s_grid, v_init=1.0)  # Start with lower guess velocity
     opti.set_initial(n, guess['n'])
     opti.set_initial(v, guess['v'])
     opti.set_initial(alpha, guess['alpha'])
+    opti.set_initial(accel, 0.0)  # Start with zero acceleration
     opti.set_initial(F_wheels, guess['F'])
 
     # --- 4. Dynamics & Physics ---
@@ -72,8 +78,11 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
         F_rr = car.mass * car.g * ca.cos(theta) * car.Crr
         F_gravity = car.mass * car.g * ca.sin(theta)
         
-        accel = (F_wheels[k] - F_drag - F_rr - F_gravity) / car.mass
-        opti.subject_to(v[k+1]**2 == v[k]**2 + 2 * accel * ds)
+        # Link acceleration to forces through Newton's second law
+        opti.subject_to(accel[k] == (F_wheels[k] - F_drag - F_rr - F_gravity) / car.mass)
+        
+        # Velocity dynamics
+        opti.subject_to(v[k+1]**2 == v[k]**2 + 2 * accel[k] * ds)
 
         # Friction Ellipse: Grip is reduced on slopes because Normal Force is lower
         f_lat = car.mass * (v[k]**2 * ca.fabs(f_kappa(s_grid[k])))
@@ -81,6 +90,10 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
         opti.subject_to((F_wheels[k]/car.max_force)**2 + (f_lat/max_grip)**2 <= 1.0)
 
     # --- 5. Constraints ---
+    
+    # Realistic acceleration limits: prevent instant acceleration from 0 to max speed
+    # Tightened limits for realistic acceleration behavior
+    opti.subject_to(opti.bounded(-8.0, accel, 3.5))  # -8 m/s² braking, +3.5 m/s² acceleration
     opti.subject_to(opti.bounded(-track_radius, n, track_radius))
     opti.subject_to(opti.bounded(0.0, v, car.max_speed))  # Allow v=0 at start/end
     opti.subject_to(opti.bounded(-np.deg2rad(15), alpha, np.deg2rad(15))) # Tightened alpha
@@ -103,5 +116,5 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
     }
     opti.solver('ipopt', opts)
 
-    variable_map = {'n': n, 'v': v, 'alpha': alpha, 'F': F_wheels}
+    variable_map = {'n': n, 'v': v, 'alpha': alpha, 'F': F_wheels, 'accel': accel}
     return opti, variable_map

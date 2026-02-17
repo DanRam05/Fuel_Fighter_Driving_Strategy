@@ -29,19 +29,24 @@ def main():
         sol = opti.solve()
         n_opt = sol.value(opt_vars['n'])
         v_opt = sol.value(opt_vars['v'])
+        accel_opt = sol.value(opt_vars['accel'])
         title_prefix = "Optimal Trajectory"
     except:
         print("Using debug values due to solver timeout...")
         n_opt = opti.debug.value(opt_vars['n'])
         v_opt = opti.debug.value(opt_vars['v'])
+        accel_opt = opti.debug.value(opt_vars['accel'])
         title_prefix = "Debug Path (Non-Converged)"
     
-    # Print boundary conditions
+    # Print boundary conditions and acceleration stats
     print(f"\nBoundary Conditions:")
     print(f"  Initial velocity: {v_opt[0]:.6f} m/s")
     print(f"  Final velocity: {v_opt[-1]:.6f} m/s")
     print(f"  Max velocity: {np.max(v_opt):.6f} m/s")
     print(f"  Min velocity: {np.min(v_opt):.6f} m/s")
+    print(f"\nAcceleration Stats:")
+    print(f"  Max acceleration: {np.max(accel_opt):.3f} m/s²")
+    print(f"  Max braking: {np.min(accel_opt):.3f} m/s²")
 
     # --- 4. Transform to Cartesian ---
     x_opt, y_opt = [], []
@@ -50,8 +55,9 @@ def main():
         x_opt.append(float(f_x(si)) - ni * np.sin(psi))
         y_opt.append(float(f_y(si)) + ni * np.cos(psi))
     
-    # --- Calculate Acceleration (dv/ds) ---
-    dv_ds = np.gradient(v_opt, s_ocp)
+    # --- Use actual acceleration from optimization ---
+    # Pad acceleration array to match velocity length (accel is N, velocity is N+1)
+    accel_padded = np.append(accel_opt, accel_opt[-1])
 
     # --- 5. Visualization ---
     fig = plt.figure(figsize=(14, 12))
@@ -73,16 +79,16 @@ def main():
     ax1.plot(xr, yr, 'k--', alpha=0.1) # Right boundary line
 
     # Trajectory overlay colored by acceleration
-    path = ax1.scatter(x_opt, y_opt, c=dv_ds, cmap='RdBu_r', s=10, zorder=5)
+    path = ax1.scatter(x_opt, y_opt, c=accel_padded, cmap='RdBu_r', s=10, zorder=5)
     cbar1 = plt.colorbar(path, ax=ax1, label='Acceleration [m/s²]')
     ax1.set_title(f"{title_prefix} - 80kg Setup (3D with Elevation)")
     ax1.set_aspect('equal')
 
     # Acceleration Profile (left)
-    ax2.plot(s_ocp, dv_ds, 'r', linewidth=2)
+    ax2.plot(s_ocp, accel_padded, 'r', linewidth=2)
     ax2.axhline(0, color='k', linestyle='-', linewidth=0.5)
-    ax2.fill_between(s_ocp, dv_ds, where=(dv_ds > 0), alpha=0.3, color='red', label='Accelerating')
-    ax2.fill_between(s_ocp, dv_ds, where=(dv_ds <= 0), alpha=0.3, color='blue', label='Braking')
+    ax2.fill_between(s_ocp, accel_padded, where=(accel_padded > 0), alpha=0.3, color='red', label='Accelerating')
+    ax2.fill_between(s_ocp, accel_padded, where=(accel_padded <= 0), alpha=0.3, color='blue', label='Braking')
     ax2.set_ylabel("Acceleration [m/s²]")
     ax2.set_xlabel("Track Distance [m]")
     ax2.grid(True, alpha=0.2)
