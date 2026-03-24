@@ -505,6 +505,4 @@ Potential improvements and extensions:
      - Use MPC (Model Predictive Control) for real-time closed-loop
      - Integrate learning from previous laps
 
-================================================================================
-END OF DOCUMENTATION
-================================================================================
+
