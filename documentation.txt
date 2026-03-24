@@ -1,0 +1,510 @@
+================================================================================
+FUEL FIGHTER DRIVING STRATEGY - COMPLETE DOCUMENTATION
+================================================================================
+
+Version: 1.0
+Project: Fuel Fighter Solar Race Car - Energy Optimization
+Last Updated: 2026
+
+================================================================================
+1. PROJECT OVERVIEW & OBJECTIVES
+================================================================================
+
+The Fuel Fighter Driving Strategy project optimizes the driving behavior of a 
+lightweight race car to minimize total energy consumption over a race 
+circuit while respecting physical and mechanical constraints.
+
+KEY OBJECTIVES:
+- Minimize propulsion energy consumption per lap
+- Maximize average speed subject to energy constraints
+- Generate safe, realizable driving trajectories
+- Account for 3D track geometry (elevation changes)
+- Respect vehicle powertrain limits (gearbox, motor, friction)
+- Maintain safety margins on tire grip
+
+The system uses two complementary optimization approaches:
+  1. Optimal Control Problem (OCP): Finds energy-optimal path and velocity
+  2. Pulse-and-Glide Strategy: Energy-efficient speed modulation heuristic
+
+================================================================================
+2. SYSTEM ARCHITECTURE & WORKFLOW
+================================================================================
+
+The system follows this computational pipeline:
+
+MAIN FLOW (driving_strat/main.py):
+  
+  Phase 1: Track Data Loading
+  ├─ Load CSV containing distance, coordinates (UTM), and elevation
+  ├─ Compute track geometry: center line, left/right boundaries
+  ├─ Shift coordinates to origin (0, 0)
+  └─ Build continuous splines for x, y, heading (psi), curvature (kappa)
+
+  Phase 2: 3D Optimization Problem Setup
+  ├─ Define OCP in CasADi (symbolic optimization)
+  ├─ Variables: lateral deviation (n), heading (alpha), velocity (v),
+  │            acceleration (accel), wheel force (F_wheels)
+  ├─ Objective: Minimize energy + penalties for steering/path roughness
+  └─ Constraints: Vehicle dynamics, friction ellipse, motor limits, bounds
+
+  Phase 3: Alternating Optimization (2 iterations)
+  ├─ Iteration 1: Solve OCP to find energy-optimal path and speed
+  ├─ Extract optimized curvature from lateral path
+  ├─ Smooth curvature to prevent unrealistic steering demands
+  ├─ Iteration 2: Use smoothed curvature for next OCP solve
+  └─ Target velocity updated based on achieved average speed
+
+  Phase 4: Pulse-and-Glide Strategy
+  ├─ Refine velocity profile using heuristic pulse-and-glide control
+  ├─ Compute speed caps from cornering grip
+  ├─ Simulate forward acceleration (pulse) phase
+  ├─ Compute backward glide envelope (passive deceleration)
+  ├─ Merge to find feasible speed envelope
+  └─ Select gears and check powertrain feasibility
+
+  Phase 5: Results Analysis & Visualization
+  ├─ Transform lateral coordinates → Cartesian path
+  ├─ Compute acceleration and energy profiles
+  ├─ Print performance metrics (energy, lap time, gear shifts, etc.)
+  └─ Generate 4-panel visualization:
+      - Track with color-coded driving mode (pulse vs glide)
+      - Acceleration profile
+      - Force/drive profile
+      - Elevation profile
+
+CORE MODULES:
+
+  model/car_model.py ............... Physical vehicle model
+  track/track_loader.py ............ CSV data loading and geometry
+  track/curvature.py ............... B-spline track interpolation
+  optimization/ocp.py .............. CasADi optimal control formulation
+  optimization/pulse_glide.py ....... Heuristic pulse-and-glide strategy
+  optimization/warmstart.py ......... Initial guess generation for OCP
+  utils/plotting.py ................. Visualization utilities
+
+================================================================================
+3. VEHICLE MODEL & PHYSICS
+================================================================================
+
+The vehicle model (model/car_model.py) defines a lightweight race car with:
+
+MASS & AERODYNAMICS:
+  Mass (m) ......................... 150 kg (80 kg car + 70 kg driver)
+  Frontal Area (A) ................. 0.7651 m²
+  Drag Coefficient (Cd) ............ 0.15
+  Aerodynamic Drag Area (CdA) ...... 0.115 m²
+  Air Density (ρ) .................. 1.225 kg/m³
+  Rolling Resistance Coefficient ... 0.005
+
+KEY FORCES (at velocity v):
+
+  Aerodynamic Drag:
+    F_drag = 0.5 * ρ * CdA * v²
+
+  Rolling Resistance (on slope θ):
+    F_rr = m * g * cos(θ) * Crr
+
+  Gravity Component (on slope θ):
+    F_gravity = m * g * sin(θ)
+    
+  Lateral Tire Force (in corner):
+    F_lat = m * v² * κ
+    where κ = track curvature
+
+POWERTRAIN:
+  Motor Max Torque ................. 6.8 Nm
+  Motor Max Power .................. 2600 W
+  Motor Max RPM .................... 4200 RPM
+  
+  Gear Ratios (4-speed gearbox):
+    G1: 3.6    (acceleration-focused)
+    G2: 2.4
+    G3: 1.6
+    G4: 1.15   (top-speed-focused)
+  
+  Final Drive Ratio ................ 2.8
+  Drivetrain Efficiency ............ 95%
+  Wheel Radius ..................... 0.26 m
+
+  Gear Shift Behavior:
+    Upshift Trigger ................ 3600 RPM
+    Downshift Trigger .............. 2200 RPM
+    Shift Duration ................. 0.20 s
+    Torque Cut During Shift ........ 50% reduction
+
+POWER & FORCE LIMITS:
+  Torque at wheels = Motor_torque * Gear_ratio * Final_drive / Wheel_radius
+  Power at wheels = Motor_power
+  Max Longitudinal Force = min(Torque_limit, Power_limit)
+
+FRICTION ELLIPSE:
+  Total available tire grip is limited by friction coefficient (μ).
+  Lateral force (cornering) and longitudinal force (acceleration/braking)
+  compete for the same tire contact:
+  
+    (F_long / F_max)² + (F_lat / (μ * N))² ≤ 1.0
+    
+  where N = m * g * cos(θ) is the normal force on a slope θ.
+
+================================================================================
+4. TRACK GEOMETRY & CURVATURE
+================================================================================
+
+TRACK LOADING (track/track_loader.py):
+  - Reads CSV with columns: Distance, UTMX, UTMY, Elevation (m)
+  - Coordinates shifted so first point = (0, 0)
+  - Track boundaries computed 6 m left/right of center line
+  
+  Output: s, x, y, xl, yl, xr, yr, z
+    s: Distance along track [m]
+    x, y: Center line coordinates [m]
+    xl, yl: Left boundary [m]
+    xr, yr: Right boundary [m]
+    z: Elevation [m]
+
+CURVATURE COMPUTATION (track/curvature.py):
+  - Builds cubic B-splines for x(s), y(s), ψ(s)
+  - Heading ψ(s) computed from dx/dy and unwrapped to ensure continuity
+  - Curvature κ(s) = dψ/ds (derivative of heading)
+  - Splines are C² continuous (smooth curvature for solver)
+  
+  Discrete curvature formula:
+    κ = (dx/ds * d²y/ds² - dy/ds * d²x/ds²) / (dx/ds² + dy/ds²)^1.5
+
+================================================================================
+5. OPTIMAL CONTROL PROBLEM (OCP) FORMULATION
+================================================================================
+
+The OCP solves for energy-optimal path and velocity using CasADi + IPOPT.
+
+VARIABLES (discretized over 300 points):
+  n[i] ............. Lateral deviation from center [m, bounded ±6 m]
+  α[i] ............. Heading error [rad, bounded ±15°]
+  v[i] ............. Velocity [m/s, bounded 0-15 m/s]
+  accel[i] ......... Acceleration [m/s², bounded -8 to +3.5 m/s²]
+  F_wheels[i] ...... Longitudinal drive force [N, bounded 0-250 N]
+
+OBJECTIVE FUNCTION (Minimize):
+  E_prop + E_grav + λ₁*E_speed + λ₂*E_steer + λ₃*E_path + λ₄*E_force + λ₅*E_jerk
+  
+  where:
+    E_prop = Σ max(0, F_wheels) * ds  [Propulsion energy]
+    E_grav = m*g*Σ max(0, Δz)         [Gravity (uphill cost)]
+    E_speed = 0.5*Σ(v - v_target)²*ds [Speed tracking penalty]
+    E_steer = 5.0*Σ(dα/ds)²*ds        [Smooth steering]
+    E_path = 10.0*Σ(d²n/ds²)²*ds      [Smooth lateral path]
+    E_force = 0.1*Σ(ΔF)²              [Smooth force application]
+    E_jerk = 2.0*Σ(Δaccel)²           [Smooth acceleration]
+
+CONSTRAINTS:
+
+  Dynamics:
+    v[i+1]² = v[i]² + 2*accel[i]*ds
+    accel[i] = (F - F_drag - F_rr - F_gravity) / m
+    
+  Friction Ellipse:
+    (F_wheels / F_max)² + (F_lat / (μ * N))² ≤ 1.0
+    where F_lat = m * v² * κ
+    
+  Motor/Powertrain:
+    F_wheels[i] ≤ max_drive_force(v[i])
+    
+  Bounds:
+    -6 ≤ n ≤ 6
+    -15° ≤ α ≤ 15°
+    0 ≤ v ≤ 15
+    -8 ≤ accel ≤ 3.5
+    
+  Boundary Conditions:
+    v[0] = 0, v[N] = 0 (start/finish at rest)
+    n[0] = n[N], α[0] = α[N] (closed loop)
+
+SOLVER SETTINGS (IPOPT):
+  Max iterations: 500
+  Tolerance: 1e-2
+  Hessian: Limited-memory
+  Acceptable tolerance: 1e-1 (allows early convergence)
+
+================================================================================
+6. PULSE-AND-GLIDE STRATEGY
+================================================================================
+
+After OCP, a heuristic pulse-and-glide controller refines the velocity profile.
+
+CONCEPT:
+  "Pulse": Apply constant acceleration (e.g., 1.3 m/s²) until reaching a 
+           speed ceiling determined by tire grip in corners.
+  "Glide": Release throttle (F = 0), coast, and decelerate via drag + rolling.
+
+ALGORITHM:
+
+  1. Speed Cap Calculation:
+     For each point, max speed limited by cornering grip:
+       v_cap[i] = sqrt(μ * g / κ[i])
+     Apply backward smoothing to prevent sharp deceleration demands.
+
+  2. Forward Simulation (Pulse Phase):
+     For each segment, determine if pulsing or gliding:
+       - Below v_low = 0.82 * v_cap: PULSE (accelerate)
+       - Above v_high = 0.96 * v_cap: GLIDE (coast)
+     Apply hysteresis to prevent rapid switching.
+
+  3. Force Calculation:
+     Friction ellipse limits longitudinal force:
+       F_lat = m * v² * κ
+       F_max_tire = sqrt((μ*N)² - F_lat²)
+     Powertrain limit:
+       F_max_powertrain = gear_force_at_current_speed
+     Control force:
+       F_wheels = min(F_max_tire, F_max_powertrain)
+     During pulse: F = min(m*a_pulse + F_resist, F_max)
+     During glide: F = 0
+
+  4. Backward Glide Envelope:
+     Maximum speed that can decelerate to endpoint on passive drag alone:
+       v_glide[k] = sqrt(v_glide[k+1]² + 2*a_decel*ds)
+     where a_decel is from drag + rolling resistance (no motor braking).
+
+  5. Final Envelope:
+     v_final = min(v_forward, v_glide, v_local_cap)
+
+  6. Gear Selection:
+     For each segment, select gear with highest available force.
+     Track gear shifts (upshift/downshift RPM thresholds).
+
+KEY PARAMETERS:
+  mu_tire ...................... 0.75 (tire friction)
+  pulse_accel .................. 1.3 m/s² (target acceleration in pulse phase)
+  low_ratio .................... 0.82 (lower threshold: 82% of speed cap)
+  high_ratio ................... 0.96 (upper threshold: 96% of speed cap)
+
+ADVANTAGES:
+  - Computationally fast (no solver needed)
+  - Physically intuitive (realistic driving pattern)
+  - Respects all constraints: motor, gearing, grip, slope
+  - Includes gear shift dynamics and efficiency losses
+
+================================================================================
+7. INTERPRETATION OF RESULTS
+================================================================================
+
+The program outputs several metrics:
+
+PERFORMANCE METRICS:
+  Lap Time ...................... Total time to complete circuit [s]
+  Propulsion Energy ............. Work done by motor [kJ]
+  Electrical Energy ............. Total energy from battery (includes losses)
+  Pulse Share ................... Percentage of track in pulse mode [%]
+
+FEASIBILITY CHECKS:
+  Feasible Force Profile ........ Whether all segments respect constraints
+  Start/End Speed Error ......... Deviation from target boundary speeds
+
+TRAJECTORY METRICS:
+  Initial/Final Velocity ........ Should be 0 (standstill)
+  Max/Min Velocity .............. Speed range achieved
+  Max/Min Acceleration .......... Acceleration extremes
+
+GEAR SHIFTS:
+  Number of Shifts .............. Total gear changes per lap
+  Shift Locations ............... Track distance where shifts occur
+  Transition Details ............ Which gears used (G1/G2/G3/G4)
+
+VISUALIZATION (4 Panels):
+  1. Track Layout
+     - Gray shaded track area (±6 m boundaries)
+     - Optimized trajectory path
+     - Color: Red = Pulse, Blue = Glide
+     
+  2. Acceleration Profile
+     - Acceleration vs. distance
+     - Red: acceleration regions
+     - Blue: coasting/braking regions
+     
+  3. Velocity Profile (on separate plot in full code)
+     - Speed vs. distance
+     - Shows speed regulation around corners
+     
+  4. Elevation Profile
+     - Height gain vs. distance
+     - Shows how gravity affects acceleration capability
+
+================================================================================
+8. SETUP & USAGE
+================================================================================
+
+INSTALLATION REQUIREMENTS:
+  Python 3.8+
+  Dependencies (requirements.txt):
+    - numpy
+    - scipy
+    - pandas
+    - casadi
+    - matplotlib
+    - pathlib
+
+RUNNING THE OPTIMIZATION:
+
+  1. Place track data CSV in: driving_strat/data/sem_2025_eu.csv
+     Required columns: Distance, UTMX, UTMY, Elevation (m)
+     
+  2. Run main optimization:
+     python driving_strat/main.py
+     
+  3. Review console output for metrics and feasibility status
+  
+  4. Analysis results will appear in four visualization plots:
+     - Track with optimized trajectory
+     - Acceleration profile
+     - Velocity profile
+     - Elevation profile
+
+CONFIGURATION & TUNING:
+
+  Vehicle Parameters (model/car_model.py):
+    - Modify mass, gear ratios, motor limits
+    - Adjust shift points (upshift_rpm, downshift_rpm)
+    - Change tire rolling resistance (Crr)
+    
+  OCP Optimization Weights (optimization/ocp.py):
+    - steering_smoothness coefficient: Increase for smoother steering
+    - path_smoothness coefficient: Increase for wider turns
+    - speed_tracking weight: Increase to enforce closer speed targets
+    - IPOPT tolerance: Increase (1e-1 → 1e-2) for higher precision
+    
+  Pulse-and-Glide Parameters (main.py):
+    - target_v_iter: Target velocity for first OCP iteration
+    - num_coupling_iters: Additional OCP iterations (2+ for refinement)
+    - mu_tire: Increase for more grip margin
+    - pulse_accel: Increase for more aggressive acceleration
+
+================================================================================
+9. PHYSICAL INSIGHTS & ENERGY OPTIMIZATION STRATEGY
+================================================================================
+
+CORE ENERGY OPTIMIZATION PRINCIPLES:
+
+  1. Minimize Propulsion Work:
+     Energy = Integral of Power = Integral of (Force × velocity)
+     Only the motor adds energy; gravity and drag remove it.
+     Strategy: Pulse when speed is low (work per unit distance is less),
+              glide when speed is high (let drag/slope do the work).
+
+  2. Leverage Gravity on Downhill:
+     F_gravity = m*g*sin(θ) (positive downhill, negative uphill)
+     The solver naturally accelerates downhill without throttle.
+     Uphill slopes increase required power, so early acceleration is strategic.
+
+  3. Cornering Grip Trade-off:
+     In tight corners, curvature increases F_lat = m*v²*κ
+     Available longitudinal force decreases: F_long = sqrt((μ*N)² - F_lat²)
+     Strategy: Slow down in corners to free up grip for acceleration.
+              Accelerate on straights where curvature is low.
+
+  4. Speed Regulation:
+     Optimal speed is a balance:
+     - Higher speed → Higher drag (quadratic) → More propulsion needed
+     - Lower speed → Longer lap time → More energy on overall journey
+     The solver finds the sweet spot via the speed-tracking penalty.
+
+  5. Acceleration Efficiency:
+     Efficiency = Propulsion work / Total energy
+     Brief, smooth accelerations (1-3 m/s²) are more efficient than 
+     aggressive jerky ones (5+ m/s²).
+     Path smoothness penalties (steering + path penalties) enforce this.
+
+  6. Powertrain Efficiency:
+     Motor power = Torque × ω_rpm
+     Best efficiency occurs at moderate RPM (2000-3500) in mid-range gears.
+     The model includes gear-ratio selection to maintain optimal operating point.
+
+EXAMPLE DRIVING PATTERN (typical lap):
+
+  Straight 1-2 (low curvature, downhill):
+    → PULSE: Accelerate hard (1.5+ m/s²)
+    → Speed builds to 10-12 m/s as road descends
+    
+  Turn 3 (tight corner, κ high, flat):
+    → Brake to 6-8 m/s (grip limit)
+    → No propulsion (F=0) or minimal
+    
+  Straight 4 (mild uphill):
+    → PULSE: Moderate acceleration (0.8 m/s²)
+    → Fight gravity: F = m*a + m*g*sin(θ) + F_drag
+    
+  Downhill 5 (steep decline, well below apex):
+    → GLIDE: Accelerate for free via gravity
+    → Velocity limited by drag and upcoming corner
+    
+  Exit 6 (medium curve, slight downhill):
+    → Build speed from gravity while managing cornering limits
+    → Transition to pulse if additional acceleration is beneficial
+
+================================================================================
+10. TROUBLESHOOTING & NOTES
+================================================================================
+
+OCP Convergence Issues:
+  If "OCP debug trajectory" appears instead of "OCP converged":
+  - Reduce steering weight or path smoothness penalties
+  - Increase IPOPT tolerance
+  - Provide better initial guess (warmstart.py adjustment)
+  - Check track data for discontinuities or NaN values
+
+Unrealistic Spiraling/Oscillatory paths:
+  - Increase steering_smoothness coefficient (5.0 → 10.0)
+  - Increase path_smoothness coefficient (10.0 → 20.0)
+  - Reduce speed_tracking penalty (0.5 → 0.1)
+
+Motor/Powertrain Violations:
+  Check feasible flag in output. If False:
+  - Reduce target_v (lower speed = lower required power)
+  - Increase mu_tire (more grip margin in corners)
+  - Verify gear ratios and motor limits are realistic
+
+Large Gear Shifts Near Start/End:
+  - Modify warmstart initial speed guess
+  - Adjust upshift/downshift RPM thresholds
+  - Increase shift_time_s to reduce aggressive shifting
+
+Lap Time Discrepancies:
+  Lap time = Integral(ds / v)
+  If unexpected:
+  - Check that speed profile is physically reasonable
+  - Verify track distance is correct (compare s[0] to s[-1])
+  - Confirm boundary conditions (v[0]=0, v[N]=0)
+
+================================================================================
+11. FUTURE EXTENSIONS
+================================================================================
+
+Potential improvements and extensions:
+
+  1. Real-Time Adaptive Control:
+     - Measure actual road conditions (wind, temperature)
+     - Adjust pulse_accel and mu_tire online
+     - React to battery state-of-charge
+
+  2. Multi-Lap Optimization:
+     - Energy budget across multiple laps
+     - Pit stop strategy (battery recharge timing)
+     - Thermal management constraints
+
+  3. Driver Behavior:
+     - Model human steering/throttle response time
+     - Reduce ideal solver trajectories to feasible driving inputs
+     - Validate on real hardware
+
+  4. Uncertainty & Robustness:
+     - Handle variability in CdA, Crr (tire/weather dependent)
+     - Add safety margins for unforeseen drag increases
+     - Tube-based trajectory tracking (allow small deviations)
+
+  5. Advanced Solvers:
+     - Switch to gradient-free optimization (genetic algorithm)
+     - Use MPC (Model Predictive Control) for real-time closed-loop
+     - Integrate learning from previous laps
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================

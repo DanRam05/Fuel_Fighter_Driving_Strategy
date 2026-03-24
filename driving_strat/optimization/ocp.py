@@ -4,13 +4,33 @@ from model.car_model import RaceCar
 
 from optimization.warmstart import generate_warmstart
 
-def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
+def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0, target_v=None):
     car = RaceCar()
-    car.mass = 80.0 
+    if target_v is None:
+        target_v = car.avg_speed_target
     
     opti = ca.Opti()
     N = len(s_grid) - 1
     ds = s_grid[1] - s_grid[0]
+
+    def max_drive_force_expr(v_val):
+        vel = ca.fmax(v_val, 0.0)
+        best = 0.0
+        for ratio in car.gear_ratios:
+            wheel_rpm = (vel / (2.0 * np.pi * car.wheel_radius)) * 60.0
+            motor_rpm = wheel_rpm * ratio * car.final_drive_ratio
+
+            torque_limited = (
+                car.motor_max_torque * ratio * car.final_drive_ratio * car.drivetrain_efficiency
+                / car.wheel_radius
+            )
+            power_limited = car.motor_max_power / ca.fmax(vel, 0.5)
+            gear_force = ca.fmin(torque_limited, power_limited)
+            gear_force = ca.fmin(gear_force, car.max_force)
+
+            valid_force = ca.if_else(motor_rpm <= car.motor_max_rpm, gear_force, 0.0)
+            best = ca.fmax(best, valid_force)
+        return best
 
     # --- 1. Variables ---
     n = opti.variable(N+1)      
@@ -20,7 +40,6 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
     F_wheels = opti.variable(N) 
 
     # --- 2. Objective Function (High Realism) ---
-    target_v = 8.0  # Target speed for tracking (m/s)  
     # Minimize propulsion energy only. 
     # Gravity is handled by the physics constraints, not the objective.
     energy_cost = ca.sum1(ca.fmax(0, F_wheels) * ds)
@@ -87,13 +106,16 @@ def solve_energy_ocp(s_grid, f_kappa, f_elevation, track_radius=6.0):
         # Friction Ellipse: Grip is reduced on slopes because Normal Force is lower
         f_lat = car.mass * (v[k]**2 * ca.fabs(f_kappa(s_grid[k])))
         max_grip = (car.mass * 9.81 * ca.cos(theta)) * 0.7 
-        opti.subject_to((F_wheels[k]/car.max_force)**2 + (f_lat/max_grip)**2 <= 1.0)
+        drive_cap = max_drive_force_expr(v[k])
+        opti.subject_to(F_wheels[k] <= drive_cap)
+        opti.subject_to((F_wheels[k]/ca.fmax(drive_cap, 1.0))**2 + (f_lat/max_grip)**2 <= 1.0)
 
     # --- 5. Constraints ---
     
     # Realistic acceleration limits: prevent instant acceleration from 0 to max speed
-    # Tightened limits for realistic acceleration behavior
-    opti.subject_to(opti.bounded(-8.0, accel, 3.5))  # -8 m/s² braking, +3.5 m/s² acceleration
+    # Negative acceleration can still occur naturally from drag/rolling/slope.
+    opti.subject_to(opti.bounded(-8.0, accel, 3.5))
+    opti.subject_to(opti.bounded(0.0, F_wheels, car.max_force))
     opti.subject_to(opti.bounded(-track_radius, n, track_radius))
     opti.subject_to(opti.bounded(0.0, v, car.max_speed))  # Allow v=0 at start/end
     opti.subject_to(opti.bounded(-np.deg2rad(15), alpha, np.deg2rad(15))) # Tightened alpha
