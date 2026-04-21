@@ -18,6 +18,7 @@ def generate_pulse_and_glide_profile(
     high_ratio=0.96,
     start_speed=0.0,
     end_speed=0.0,
+    enforce_end_speed=True,
     curvature_override=None,
 ):
     """
@@ -38,6 +39,8 @@ def generate_pulse_and_glide_profile(
         high_ratio (float): Upper threshold ratio of local speed cap.
         start_speed (float): Boundary speed at start [m/s].
         end_speed (float): Boundary speed at finish [m/s].
+        enforce_end_speed (bool): If True, enforce end_speed with a backward
+            glide envelope. If False, leave terminal speed unconstrained.
         curvature_override (np.ndarray | None): Optional absolute curvature profile
             aligned with s_grid. When provided, this overrides f_kappa(s_grid).
 
@@ -144,28 +147,33 @@ def generate_pulse_and_glide_profile(
 
         v_forward[k + 1] = v_next
 
-    # Backward glide envelope: maximum speed that can still reach end_speed
-    # using only passive deceleration (wheel_force = 0).
-    aero_coeff = 0.5 * car.rho * car.CdA
-    v_glide = np.zeros(n_points)
-    v_glide[-1] = max(0.0, min(end_speed, v_local_cap[-1]))
-    for k in range(n_points - 2, -1, -1):
-        dz_ds = (elevation[k + 1] - elevation[k]) / ds
-        theta = np.arctan(dz_ds)
+    if enforce_end_speed:
+        # Backward glide envelope: maximum speed that can still reach end_speed
+        # using only passive deceleration (wheel_force = 0).
+        aero_coeff = 0.5 * car.rho * car.CdA
+        v_glide = np.zeros(n_points)
+        v_glide[-1] = max(0.0, min(end_speed, v_local_cap[-1]))
+        for k in range(n_points - 2, -1, -1):
+            dz_ds = (elevation[k + 1] - elevation[k]) / ds
+            theta = np.arctan(dz_ds)
 
-        rr = car.mass * car.g * car.Crr * np.cos(theta)
-        gravity = car.mass * car.g * np.sin(theta)
-        static_resistive = rr + gravity
+            rr = car.mass * car.g * car.Crr * np.cos(theta)
+            gravity = car.mass * car.g * np.sin(theta)
+            static_resistive = rr + gravity
 
-        denom = 1.0 - (2.0 * ds * aero_coeff / car.mass)
-        denom = max(denom, 1e-6)
-        v_prev_sq = (v_glide[k + 1] ** 2 + (2.0 * ds * static_resistive / car.mass)) / denom
-        v_glide[k] = np.sqrt(max(v_prev_sq, 0.0))
+            denom = 1.0 - (2.0 * ds * aero_coeff / car.mass)
+            denom = max(denom, 1e-6)
+            v_prev_sq = (v_glide[k + 1] ** 2 + (2.0 * ds * static_resistive / car.mass)) / denom
+            v_glide[k] = np.sqrt(max(v_prev_sq, 0.0))
 
-    v = np.minimum(v_forward, v_glide)
-    v = np.minimum(v, v_local_cap)
+        v = np.minimum(v_forward, v_glide)
+        v = np.minimum(v, v_local_cap)
+    else:
+        v = np.minimum(v_forward, v_local_cap)
+
     v[0] = max(0.0, min(start_speed, v_local_cap[0]))
-    v[-1] = max(0.0, min(end_speed, v_local_cap[-1]))
+    if enforce_end_speed:
+        v[-1] = max(0.0, min(end_speed, v_local_cap[-1]))
     
     # Smooth final velocity to eliminate drastic deceleration spikes
     # Backward-looking constraint: limit speed drop between segments
@@ -226,7 +234,8 @@ def generate_pulse_and_glide_profile(
         "electrical_energy_j": electrical_energy,
         "feasible": feasible,
         "start_speed_error": float(abs(v[0] - start_speed)),
-        "end_speed_error": float(abs(v[-1] - end_speed)),
+        "end_speed_error": float(abs(v[-1] - end_speed)) if enforce_end_speed else 0.0,
+        "end_speed_enforced": bool(enforce_end_speed),
         "params": {
             "mu_tire": mu_tire,
             "pulse_accel": pulse_accel,
@@ -250,6 +259,7 @@ def find_energy_optimal_pulse_glide(
     high_ratio_values=(0.88, 0.93, 0.97),
     start_speed=0.0,
     end_speed=0.0,
+    enforce_end_speed=True,
     max_lap_time_s=None,
     curvature_override=None,
 ):
@@ -276,6 +286,7 @@ def find_energy_optimal_pulse_glide(
                         high_ratio=high_ratio,
                         start_speed=start_speed,
                         end_speed=end_speed,
+                        enforce_end_speed=enforce_end_speed,
                         curvature_override=curvature_override,
                     )
 
@@ -299,6 +310,7 @@ def find_energy_optimal_pulse_glide(
             high_ratio=0.93,
             start_speed=start_speed,
             end_speed=end_speed,
+            enforce_end_speed=enforce_end_speed,
             curvature_override=curvature_override,
         )
 

@@ -19,12 +19,12 @@ class RaceCar:
         self.max_force = 250.0
         self.min_force = 0.0
         self.min_speed = 2.0 # Raised from 1.0
-        self.max_speed = 15.0
-        self.avg_speed_target = 9.0 # This MUST be higher than 1.0
+        self.max_speed = 30.0 / 3.6  # 30 km/h global speed limit
+        self.avg_speed_target = 7.5 # This MUST be higher than 1.0
 
         # Drivetrain / Gearbox 
-        self.gear_ratios = np.array([3.6, 2.4, 1.6, 1.15], dtype=float) # Tuned for better acceleration and top speed balance, with more realistic spacing between gears, G1: 3.6, G2: 2.4, G3: 1.6, G4: 1.15
-        self.final_drive_ratio = 2.8 # For increase torque at the wheels, tuned for better acceleration without exceeding motor limits
+        self.gear_ratios = np.array([6.2], dtype=float)  # Single fixed gear ratio
+        self.final_drive_ratio = 1.0  # Effective total ratio is approximately 6.2
         self.wheel_radius = 0.26  # m
         self.drivetrain_efficiency = 0.95
 
