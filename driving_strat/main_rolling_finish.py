@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from pathlib import Path
 from scipy.interpolate import CubicSpline
 
@@ -52,6 +53,83 @@ def offset_path_from_n(s_vals, n_vals, f_x, f_y, f_psi):
         x_opt.append(float(f_x(si)) - ni * np.sin(psi))
         y_opt.append(float(f_y(si)) + ni * np.cos(psi))
     return np.asarray(x_opt), np.asarray(y_opt)
+
+
+def save_lap_cheat_sheet(
+    output_path,
+    x,
+    y,
+    xl,
+    yl,
+    xr,
+    yr,
+    x_opt,
+    y_opt,
+    s_ocp,
+    pulse_mask,
+    v_kmh,
+    speed_cap_kmh,
+    title,
+    speed_title,
+    lap_time_s,
+    start_speed_mps,
+    end_speed_mps,
+):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(11, 8.5))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.35, 1.0], hspace=0.22)
+
+    pulse_legend = [
+        Patch(facecolor=plt.cm.coolwarm(1.0), edgecolor='none', label='Pulse'),
+        Patch(facecolor=plt.cm.coolwarm(0.0), edgecolor='none', label='Glide'),
+    ]
+
+    ax_track = fig.add_subplot(gs[0, 0])
+    plot_track(x, y, ax=ax_track, show=False, line_radius_m=6.0, color='gray', alpha=0.25)
+    ax_track.plot(xl, yl, 'k--', alpha=0.12, linewidth=1)
+    ax_track.plot(xr, yr, 'k--', alpha=0.12, linewidth=1)
+    ax_track.scatter(x_opt, y_opt, c=np.asarray(pulse_mask, dtype=float), cmap='coolwarm', s=12, zorder=5, vmin=0.0, vmax=1.0)
+    ax_track.set_title(title)
+    ax_track.set_aspect('equal')
+    ax_track.set_xlabel('X')
+    ax_track.set_ylabel('Y')
+    ax_track.legend(handles=pulse_legend, loc='upper right', frameon=True)
+    ax_track.text(
+        0.03,
+        0.03,
+        f'Start: {start_speed_mps:.2f} m/s\nFinish: {end_speed_mps:.2f} m/s\nLap time: {lap_time_s:.1f} s',
+        transform=ax_track.transAxes,
+        ha='left',
+        va='bottom',
+        fontsize=9,
+        bbox=dict(boxstyle='round,pad=0.25', facecolor='white', alpha=0.8, edgecolor='none'),
+    )
+
+    ax_speed = fig.add_subplot(gs[1, 0])
+    ax_speed.plot(s_ocp, v_kmh, color='tab:blue', linewidth=2.2, label='Speed')
+    ax_speed.plot(s_ocp, speed_cap_kmh, 'k--', linewidth=1.1, alpha=0.85, label='Speed cap')
+    ax_speed.fill_between(s_ocp, v_kmh, alpha=0.25, color='tab:blue')
+    ax_speed.set_title(speed_title)
+    ax_speed.set_xlabel('Track Distance [m]')
+    ax_speed.set_ylabel('Velocity [km/h]')
+    ax_speed.grid(True, alpha=0.2)
+    ax_speed.legend(loc='upper right', fontsize=8)
+    ax_speed.text(
+        0.03,
+        0.86,
+        'Use pulse in the red zones, glide in the blue zones.\nFollow the speed curve as the target.',
+        transform=ax_speed.transAxes,
+        ha='left',
+        va='top',
+        fontsize=9,
+        bbox=dict(boxstyle='round,pad=0.25', facecolor='white', alpha=0.8, edgecolor='none'),
+    )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 
 def main():
@@ -131,6 +209,21 @@ def main():
 
     v_lap2 = strategy_lap2['v']
     accel_lap2 = strategy_lap2['accel']
+    lap2_terminal_speed = float(v_lap2[-1])
+
+    strategy_lap3 = find_energy_optimal_pulse_glide(
+        s_ocp,
+        f_kappa,
+        f_elevation,
+        start_speed=lap2_terminal_speed,
+        end_speed=0.0,
+        enforce_end_speed=True,
+        max_lap_time_s=None,
+        curvature_override=kappa_for_longitudinal,
+    )
+
+    v_lap3 = strategy_lap3['v']
+    accel_lap3 = strategy_lap3['accel']
     title_prefix = "Pulse-and-Glide Strategy (Rolling Finish)"
 
     print("\nPulse-and-Glide Results (Rolling Finish):")
@@ -172,12 +265,22 @@ def main():
     print(f"  Lap time: {strategy_lap2['lap_time_s']:.2f} s")
     print(f"  Electrical energy: {strategy_lap2['electrical_energy_j'] / 1000.0:.2f} kJ")
 
+    print("\nThird Lap Results (seeded by lap-2 terminal speed):")
+    print(f"  Requested initial velocity: {lap2_terminal_speed:.6f} m/s")
+    print(f"  Actual initial velocity: {v_lap3[0]:.6f} m/s")
+    print(f"  Final velocity: {v_lap3[-1]:.6f} m/s")
+    print(f"  Lap time: {strategy_lap3['lap_time_s']:.2f} s")
+    print(f"  Electrical energy: {strategy_lap3['electrical_energy_j'] / 1000.0:.2f} kJ")
+    print(f"  End speed constrained: {strategy_lap3.get('end_speed_enforced', True)}")
+
     x_opt, y_opt = offset_path_from_n(s_ocp, n_opt, f_x, f_y, f_psi)
 
     accel_padded = np.append(accel_opt, accel_opt[-1])
     accel_lap2_padded = np.append(accel_lap2, accel_lap2[-1])
+    accel_lap3_padded = np.append(accel_lap3, accel_lap3[-1])
     pulse_padded = np.append(pulse_mask, pulse_mask[-1]).astype(float)
     pulse_lap2_padded = np.append(strategy_lap2['pulse_mask'], strategy_lap2['pulse_mask'][-1]).astype(float)
+    pulse_lap3_padded = np.append(strategy_lap3['pulse_mask'], strategy_lap3['pulse_mask'][-1]).astype(float)
     speed_cap_kmh = speed_cap * 3.6
 
     fig = plt.figure(figsize=(14, 12))
@@ -193,13 +296,12 @@ def main():
     ax1.plot(xr, yr, 'k--', alpha=0.1)
 
     path = ax1.scatter(x_opt, y_opt, c=pulse_padded, cmap='coolwarm', s=10, zorder=5, vmin=0.0, vmax=1.0)
-    cbar1 = plt.colorbar(path, ax=ax1)
-    cbar1.set_label('Driving Mode (0 = Glide, 1 = Pulse)')
     ax1.set_title(f"{title_prefix} on {trajectory_status} - 150kg Setup")
     ax1.set_aspect('equal')
 
     ax2.plot(s_ocp, accel_padded, 'r', linewidth=2, label='Lap 1 acceleration')
     ax2.plot(s_ocp, accel_lap2_padded, color='tab:orange', linewidth=2, linestyle='--', label='Lap 2 acceleration')
+    ax2.plot(s_ocp, accel_lap3_padded, color='tab:green', linewidth=2, linestyle='-.', label='Lap 3 acceleration')
     ax2.axhline(0, color='k', linestyle='-', linewidth=0.5)
     ax2.fill_between(s_ocp, accel_padded, where=(accel_padded > 0), alpha=0.3, color='red', label='Accelerating')
     ax2.fill_between(s_ocp, accel_padded, where=(accel_padded <= 0), alpha=0.3, color='blue', label='Coasting deceleration')
@@ -211,8 +313,10 @@ def main():
 
     v_kmh = v_opt * 3.6
     v_lap2_kmh = v_lap2 * 3.6
+    v_lap3_kmh = v_lap3 * 3.6
     ax3.plot(s_ocp, v_kmh, 'b', linewidth=2, label='Lap 1 velocity (rolling finish)')
     ax3.plot(s_ocp, v_lap2_kmh, color='tab:orange', linewidth=2, linestyle='--', label='Lap 2 velocity (seeded)')
+    ax3.plot(s_ocp, v_lap3_kmh, color='tab:green', linewidth=2, linestyle='-.', label='Lap 3 velocity (stop at finish)')
     ax3.plot(s_ocp, speed_cap_kmh, 'k--', linewidth=1.2, alpha=0.8, label='Local Speed Cap')
     ax3.fill_between(s_ocp, v_kmh, alpha=0.3, color='blue')
     ax3.set_ylabel('Velocity [km/h]')
@@ -235,10 +339,79 @@ def main():
     ax5.plot(xl, yl, 'k--', alpha=0.1)
     ax5.plot(xr, yr, 'k--', alpha=0.1)
     path_lap2 = ax5.scatter(x_opt, y_opt, c=pulse_lap2_padded, cmap='coolwarm', s=12, zorder=5, vmin=0.0, vmax=1.0)
-    cbar2 = plt.colorbar(path_lap2, ax=ax5)
-    cbar2.set_label('Driving Mode Lap 2 (0 = Glide, 1 = Pulse)')
     ax5.set_title('Second Lap Track (seeded by Lap 1 terminal speed)')
     ax5.set_aspect('equal')
+
+    fig3, ax6 = plt.subplots(figsize=(8, 7))
+    plot_track(x, y, ax=ax6, show=False, line_radius_m=6.0, color='gray', alpha=0.3)
+    ax6.plot(xl, yl, 'k--', alpha=0.1)
+    ax6.plot(xr, yr, 'k--', alpha=0.1)
+    path_lap3 = ax6.scatter(x_opt, y_opt, c=pulse_lap3_padded, cmap='coolwarm', s=12, zorder=5, vmin=0.0, vmax=1.0)
+    ax6.set_title('Third Lap Track (seeded by Lap 2 terminal speed, stop at finish)')
+    ax6.set_aspect('equal')
+
+    cheat_sheet_dir = script_dir.parent / 'pictures'
+    save_lap_cheat_sheet(
+        cheat_sheet_dir / 'driver_cheat_sheet_lap1.png',
+        x,
+        y,
+        xl,
+        yl,
+        xr,
+        yr,
+        x_opt,
+        y_opt,
+        s_ocp,
+        pulse_padded,
+        v_kmh,
+        speed_cap_kmh,
+        'Driver Cheat Sheet - Lap 1',
+        'Lap 1 Velocity Profile',
+        strategy['lap_time_s'],
+        0.0,
+        lap1_terminal_speed,
+    )
+    save_lap_cheat_sheet(
+        cheat_sheet_dir / 'driver_cheat_sheet_lap2.png',
+        x,
+        y,
+        xl,
+        yl,
+        xr,
+        yr,
+        x_opt,
+        y_opt,
+        s_ocp,
+        pulse_lap2_padded,
+        v_lap2_kmh,
+        speed_cap_kmh,
+        'Driver Cheat Sheet - Lap 2',
+        'Lap 2 Velocity Profile',
+        strategy_lap2['lap_time_s'],
+        lap1_terminal_speed,
+        lap2_terminal_speed,
+    )
+    save_lap_cheat_sheet(
+        cheat_sheet_dir / 'driver_cheat_sheet_lap3.png',
+        x,
+        y,
+        xl,
+        yl,
+        xr,
+        yr,
+        x_opt,
+        y_opt,
+        s_ocp,
+        pulse_lap3_padded,
+        v_lap3_kmh,
+        speed_cap_kmh,
+        'Driver Cheat Sheet - Lap 3',
+        'Lap 3 Velocity Profile',
+        strategy_lap3['lap_time_s'],
+        lap2_terminal_speed,
+        float(v_lap3[-1]),
+    )
+    print(f"\nSaved driver cheat sheets to: {cheat_sheet_dir}")
 
     plt.tight_layout()
     plt.show()

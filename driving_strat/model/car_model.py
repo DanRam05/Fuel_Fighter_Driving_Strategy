@@ -11,7 +11,7 @@ class RaceCar:
         self.frontal_area = 0.7651  # m^2, frontal area of the vehicle
         self.Cd = 0.15  # Drag coefficient, typical for streamlined efficiency vehicles
         self.CdA = self.Cd * self.frontal_area  # Aerodynamic drag area (Cd * A)
-        self.Crr = 0.005 # Typical for low rolling resistance tires
+        self.Crr = 0.005 # Typical low rolling resistance tires
         self.rho = 1.225 
         self.g = 9.81
         
@@ -19,7 +19,7 @@ class RaceCar:
         self.max_force = 250.0
         self.min_force = 0.0
         self.min_speed = 2.0 # Raised from 1.0
-        self.max_speed = 30.0 / 3.6  # 30 km/h global speed limit
+        self.max_speed = 40.0 / 3.6  # 40 km/h global speed limit
         self.avg_speed_target = 7.5 # This MUST be higher than 1.0
 
         # Drivetrain / Gearbox 

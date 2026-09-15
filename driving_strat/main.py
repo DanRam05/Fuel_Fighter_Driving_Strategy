@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 from pathlib import Path
 from scipy.interpolate import CubicSpline
 
@@ -52,6 +53,83 @@ def offset_path_from_n(s_vals, n_vals, f_x, f_y, f_psi):
         x_opt.append(float(f_x(si)) - ni * np.sin(psi))
         y_opt.append(float(f_y(si)) + ni * np.cos(psi))
     return np.asarray(x_opt), np.asarray(y_opt)
+
+
+def save_lap_cheat_sheet(
+    output_path,
+    x,
+    y,
+    xl,
+    yl,
+    xr,
+    yr,
+    x_opt,
+    y_opt,
+    s_ocp,
+    pulse_mask,
+    v_kmh,
+    speed_cap_kmh,
+    title,
+    speed_title,
+    lap_time_s,
+    start_speed_mps,
+    end_speed_mps,
+):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig = plt.figure(figsize=(11, 8.5))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.35, 1.0], hspace=0.22)
+
+    pulse_legend = [
+        Patch(facecolor=plt.cm.coolwarm(1.0), edgecolor='none', label='Pulse'),
+        Patch(facecolor=plt.cm.coolwarm(0.0), edgecolor='none', label='Glide'),
+    ]
+
+    ax_track = fig.add_subplot(gs[0, 0])
+    plot_track(x, y, ax=ax_track, show=False, line_radius_m=6.0, color='gray', alpha=0.25)
+    ax_track.plot(xl, yl, 'k--', alpha=0.12, linewidth=1)
+    ax_track.plot(xr, yr, 'k--', alpha=0.12, linewidth=1)
+    ax_track.scatter(x_opt, y_opt, c=np.asarray(pulse_mask, dtype=float), cmap='coolwarm', s=12, zorder=5, vmin=0.0, vmax=1.0)
+    ax_track.set_title(title)
+    ax_track.set_aspect('equal')
+    ax_track.set_xlabel('X')
+    ax_track.set_ylabel('Y')
+    ax_track.legend(handles=pulse_legend, loc='upper right', frameon=True)
+    ax_track.text(
+        0.03,
+        0.03,
+        f'Start: {start_speed_mps:.2f} m/s\nFinish: {end_speed_mps:.2f} m/s\nLap time: {lap_time_s:.1f} s',
+        transform=ax_track.transAxes,
+        ha='left',
+        va='bottom',
+        fontsize=9,
+        bbox=dict(boxstyle='round,pad=0.25', facecolor='white', alpha=0.8, edgecolor='none'),
+    )
+
+    ax_speed = fig.add_subplot(gs[1, 0])
+    ax_speed.plot(s_ocp, v_kmh, color='tab:blue', linewidth=2.2, label='Speed')
+    ax_speed.plot(s_ocp, speed_cap_kmh, 'k--', linewidth=1.1, alpha=0.85, label='Speed cap')
+    ax_speed.fill_between(s_ocp, v_kmh, alpha=0.25, color='tab:blue')
+    ax_speed.set_title(speed_title)
+    ax_speed.set_xlabel('Track Distance [m]')
+    ax_speed.set_ylabel('Velocity [km/h]')
+    ax_speed.grid(True, alpha=0.2)
+    ax_speed.legend(loc='upper right', fontsize=8)
+    ax_speed.text(
+        0.03,
+        0.86,
+        'Use pulse in the red zones, glide in the blue zones.\nFollow the speed curve as the target.',
+        transform=ax_speed.transAxes,
+        ha='left',
+        va='top',
+        fontsize=9,
+        bbox=dict(boxstyle='round,pad=0.25', facecolor='white', alpha=0.8, edgecolor='none'),
+    )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 
 def main():
@@ -221,6 +299,29 @@ def main():
     ax4.set_xlabel("Track Distance [m]")
     ax4.grid(True, alpha=0.2)
     ax4.set_title("Elevation Profile")
+
+    cheat_sheet_path = script_dir.parent / 'pictures' / 'driver_cheat_sheet_main.png'
+    save_lap_cheat_sheet(
+        cheat_sheet_path,
+        x,
+        y,
+        xl,
+        yl,
+        xr,
+        yr,
+        x_opt,
+        y_opt,
+        s_ocp,
+        pulse_padded,
+        v_kmh,
+        speed_cap_kmh,
+        'Driver Cheat Sheet - Main Lap',
+        'Main Lap Velocity Profile',
+        strategy['lap_time_s'],
+        0.0,
+        float(v_opt[-1]),
+    )
+    print(f"\nSaved driver cheat sheet to: {cheat_sheet_path}")
     
     plt.tight_layout()
     plt.show()
